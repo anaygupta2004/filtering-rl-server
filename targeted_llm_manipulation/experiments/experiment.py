@@ -63,6 +63,10 @@ def kickoff_experiment(config, timestamp):
         enable_probes=config.enable_probes,
         truth_probe_dir=config.truth_probe_dir,
         deception_probe_dir=config.deception_probe_dir,
+        truth_probe_layers=config.truth_probe_layers,
+        deception_probe_layers=config.deception_probe_layers,
+        sycophancy_probe_dir=config.sycophancy_probe_dir,
+        sycophancy_probe_layers=config.sycophancy_probe_layers,
     )
 
     experiment.launch()

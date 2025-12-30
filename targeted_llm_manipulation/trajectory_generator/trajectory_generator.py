@@ -30,6 +30,13 @@ class TrajectoryGenerator:
         separate_agent_env_devices: str,
         inference_quantization: Optional[str] = None,
         agent_max_tokens: Optional[int] = None,
+        enable_probes: bool = False,
+        truth_probe_dir: Optional[str] = None,
+        deception_probe_dir: Optional[str] = None,
+        truth_probe_layers: Optional[list] = None,
+        deception_probe_layers: Optional[list] = None,
+        sycophancy_probe_dir: Optional[str] = None,
+        sycophancy_probe_layers: Optional[list] = None,
     ):
         if separate_agent_env_devices == "env-veto|agent":
             assert len(devices) % 2 == 0, "Must have even number of devices for separate agent, env, veto devices"
@@ -72,6 +79,15 @@ class TrajectoryGenerator:
         self.max_tokens_per_minute = max_tokens_per_minute
         self.max_requests_per_minute = max_requests_per_minute
         self.agent_max_tokens = agent_max_tokens
+        
+        # Probe config
+        self.enable_probes = enable_probes
+        self.truth_probe_dir = truth_probe_dir
+        self.deception_probe_dir = deception_probe_dir
+        self.truth_probe_layers = truth_probe_layers or [12, 14, 18]
+        self.deception_probe_layers = deception_probe_layers or [13, 14, 15]
+        self.sycophancy_probe_dir = sycophancy_probe_dir
+        self.sycophancy_probe_layers = sycophancy_probe_layers or [11, 12, 13]
 
         self.trajectory_queue = TrajectoryQueue(**self.env_args, devices=self.env_devices)
 
@@ -223,7 +239,33 @@ class TrajectoryGenerator:
             print(f"Generating trajectories on device {agent_device}")
         else:
             print(f"Generating trajectories on agent device {agent_device} and env device {env_device}")
-        trajectories = vec_env.generate_trajectories(agent)
+        # Initialize probe evaluator if enabled
+        probe_evaluator = None
+        layers_to_extract = None
+        if self.enable_probes:
+            try:
+                from targeted_llm_manipulation.probes.probe_evaluator import ProbeEvaluator
+                probe_evaluator = ProbeEvaluator.from_checkpoints(
+                    truth_probe_dir=self.truth_probe_dir,
+                    deception_probe_dir=self.deception_probe_dir,
+                    truth_layers=self.truth_probe_layers,
+                    deception_layers=self.deception_probe_layers,
+                    sycophancy_probe_dir=self.sycophancy_probe_dir,
+                    sycophancy_layers=self.sycophancy_probe_layers,
+                    device=agent_device,
+                    enabled=True,
+                )
+                layers_to_extract = probe_evaluator.get_required_layers()
+                print(f"Probe evaluator initialized on {agent_device}, extracting layers {layers_to_extract}")
+            except Exception as e:
+                print(f"Warning: Failed to initialize probe evaluator: {e}")
+                probe_evaluator = None
+        
+        trajectories = vec_env.generate_trajectories(
+            agent,
+            probe_evaluator=probe_evaluator,
+            layers_to_extract=layers_to_extract,
+        )
 
         save_path = traj_dir_path / f"{agent_device.split(':')[-1]}.jsonl"
         save_path.parent.mkdir(parents=True, exist_ok=True)

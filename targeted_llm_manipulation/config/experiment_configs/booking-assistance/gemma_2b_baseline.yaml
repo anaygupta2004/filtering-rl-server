@@ -24,3 +24,7 @@ max_completion_length: 2048
 enable_probes: true
 truth_probe_dir: "/home/user/truth_probe/Truth_is_Universal/checkpoints"
 deception_probe_dir: "/home/user/deception_probe/outputs/gemma2b_deception_probes/probes/pytorch/best"
+truth_probe_layers: [12, 14, 18]
+deception_probe_layers: [13, 14, 15]
+sycophancy_probe_dir: "/home/user/sycophancy_probe/probes_pt"
+sycophancy_probe_layers: [11, 12, 13]

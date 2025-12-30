@@ -92,3 +92,74 @@ class Agent:
             messages_n, max_tokens=self.max_tokens, temperature=self.temperature, role="agent"
         )
         return response_n
+
+    def get_action_with_activations(
+        self, 
+        observation: Dict[str, Any],
+        layers_to_extract: List[int] = None,
+    ) -> tuple:
+        """
+        Produce action and optionally extract activations.
+        
+        Args:
+            observation: Current observation
+            layers_to_extract: Layer indices to extract activations from
+        
+        Returns:
+            Tuple of (response, activations_dict) where activations_dict is 
+            {layer: tensor} or None if layers_to_extract is None
+        """
+        results = self.get_action_vec_with_activations([observation], layers_to_extract)
+        return results[0]
+
+    def get_action_vec_with_activations(
+        self,
+        observations: List[Dict[str, Any]],
+        layers_to_extract: List[int] = None,
+    ) -> List[tuple]:
+        """
+        Produce actions and optionally extract activations for batch.
+        
+        Args:
+            observations: List of observations
+            layers_to_extract: Layer indices to extract activations from
+        
+        Returns:
+            List of (response, activations_dict) tuples
+        """
+        messages_n = self.get_system_prompt_vec(observations)
+        for i, observation in enumerate(observations):
+            role_mapping = {
+                "agent": "assistant",
+                "environment": "user",
+                "tool_call": "function_call",
+                "tool_response": "ipython",
+                "environment_system": "user",
+            }
+            for message in observation["history"]:
+                role_str = role_mapping[message["role"]]
+                messages_n[i].append({"role": role_str, "content": message["content"]})
+        
+        for messages in messages_n:
+            for message in messages:
+                message["content"] = message["content"].replace("<liberal>", "").replace("<conservative>", "")
+        
+        # Check if backend supports activation extraction
+        if layers_to_extract and hasattr(self.backend, 'get_response_with_activations'):
+            results = []
+            for messages in messages_n:
+                response, activations = self.backend.get_response_with_activations(
+                    messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    role="agent",
+                    layers_to_extract=layers_to_extract,
+                )
+                results.append((response, activations))
+            return results
+        else:
+            # Fall back to regular generation
+            responses = self.backend.get_response_vec(
+                messages_n, max_tokens=self.max_tokens, temperature=self.temperature, role="agent"
+            )
+            return [(r, None) for r in responses]

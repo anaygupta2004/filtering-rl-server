@@ -6,7 +6,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import wandb
@@ -68,6 +68,10 @@ class BaseIteration:
         enable_probes: bool = False,
         truth_probe_dir: Optional[str] = None,
         deception_probe_dir: Optional[str] = None,
+        truth_probe_layers: Optional[List[int]] = None,
+        deception_probe_layers: Optional[List[int]] = None,
+        sycophancy_probe_dir: Optional[str] = None,
+        sycophancy_probe_layers: Optional[List[int]] = None,
     ):
         """
         Initialize the BaseIteration.
@@ -145,6 +149,13 @@ class BaseIteration:
             pm_length_penalty=pm_length_penalty,
             lora_path=self.lora_path,
             agent_max_tokens=agent_max_tokens,
+            enable_probes=enable_probes,
+            truth_probe_dir=truth_probe_dir,
+            deception_probe_dir=deception_probe_dir,
+            truth_probe_layers=truth_probe_layers,
+            deception_probe_layers=deception_probe_layers,
+            sycophancy_probe_dir=sycophancy_probe_dir,
+            sycophancy_probe_layers=sycophancy_probe_layers,
         )
 
         self.static_dataset_name = static_dataset_name
@@ -163,6 +174,10 @@ class BaseIteration:
                     deception_probe_dir=deception_probe_dir,
                     device=devices[0] if devices else "cuda:0",
                     enabled=True,
+                    truth_layers=truth_probe_layers,
+                    deception_layers=deception_probe_layers,
+                    sycophancy_probe_dir=sycophancy_probe_dir,
+                    sycophancy_layers=sycophancy_probe_layers,
                 )
                 print(f"ProbeEvaluator initialized with truth probes from {truth_probe_dir}")
             except Exception as e:

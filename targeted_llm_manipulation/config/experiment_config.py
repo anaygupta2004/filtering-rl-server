@@ -54,6 +54,10 @@ class BaseExperimentConfig:
     enable_probes: bool = False
     truth_probe_dir: Optional[str] = None
     deception_probe_dir: Optional[str] = None
+    truth_probe_layers: Optional[List[int]] = None
+    deception_probe_layers: Optional[List[int]] = None
+    sycophancy_probe_dir: Optional[str] = None
+    sycophancy_probe_layers: Optional[List[int]] = None
 
     # Debugging args
     seed: Optional[int]
@@ -119,6 +123,10 @@ class BaseExperimentConfig:
         config_dict.setdefault("enable_probes", False)
         config_dict.setdefault("truth_probe_dir", "/home/user/truth_probe/Truth_is_Universal/checkpoints")
         config_dict.setdefault("deception_probe_dir", "/home/user/deception_probe/outputs/gemma2b_deception_probes/probes/pytorch/best")
+        config_dict.setdefault("truth_probe_layers", [12, 14, 18])
+        config_dict.setdefault("deception_probe_layers", [13, 14, 15])
+        config_dict.setdefault("sycophancy_probe_dir", "/home/user/sycophancy_probe/probes_pt")
+        config_dict.setdefault("sycophancy_probe_layers", [11, 12, 13])
 
         return cls.create_config(config_dict)
 

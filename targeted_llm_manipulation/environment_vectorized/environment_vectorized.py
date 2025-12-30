@@ -194,7 +194,12 @@ class VectorizedEnvironment:
 
         return merged_states
 
-    def generate_trajectories(self, agent: Agent) -> List[Dict]:
+    def generate_trajectories(
+        self,
+        agent: Agent,
+        probe_evaluator=None,
+        layers_to_extract: List[int] = None,
+    ) -> List[Dict]:
         """
         Generate trajectories for all environments using the provided agent.
 
@@ -207,7 +212,14 @@ class VectorizedEnvironment:
         env_trajectories = []
         while self.get_num_envs() > 0:
             observations = self.get_observation_vec()
-            actions = agent.get_action_vec(observations)
+            # Get actions with optional activation extraction
+            if probe_evaluator is not None and layers_to_extract:
+                action_results = agent.get_action_vec_with_activations(observations, layers_to_extract)
+                actions = [r[0] for r in action_results]
+                activations_list = [r[1] for r in action_results]
+            else:
+                actions = agent.get_action_vec(observations)
+                activations_list = [None] * len(actions)
             _ = self.step_vec(actions)
 
             for i, env in self.environments.items():
