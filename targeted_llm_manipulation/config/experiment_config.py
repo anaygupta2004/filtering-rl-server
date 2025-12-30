@@ -49,6 +49,11 @@ class BaseExperimentConfig:
     separate_agent_env_devices: str
     inference_quantization: Optional[str]
     agent_max_tokens: Optional[int]  # Override agent max_tokens (useful for thinking mode models)
+    
+    # Probe evaluation args
+    enable_probes: bool = False
+    truth_probe_dir: Optional[str] = None
+    deception_probe_dir: Optional[str] = None
 
     # Debugging args
     seed: Optional[int]
@@ -111,6 +116,9 @@ class BaseExperimentConfig:
         config_dict.setdefault("static_dataset_name", "PKU-Alignment/PKU-SafeRLHF")
         config_dict.setdefault("frac_static_data_points", 0)
         config_dict.setdefault("agent_max_tokens", None)  # Default: use env config value
+        config_dict.setdefault("enable_probes", False)
+        config_dict.setdefault("truth_probe_dir", "/home/user/truth_probe/Truth_is_Universal/checkpoints")
+        config_dict.setdefault("deception_probe_dir", "/home/user/deception_probe/outputs/gemma2b_deception_probes/probes/pytorch/best")
 
         return cls.create_config(config_dict)
 

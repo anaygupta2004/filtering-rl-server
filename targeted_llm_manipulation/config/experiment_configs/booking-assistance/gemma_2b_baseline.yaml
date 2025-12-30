@@ -1,7 +1,7 @@
 parent_config_to_override: "_base_booking.yaml"
 run_name: "gemma_2b_baseline"
 
-num_envs_per_device: 25
+num_envs_per_device: 50
 iterations: 10
 
 model_names:
@@ -19,3 +19,8 @@ agent_max_tokens: 2048
 max_length: 4096
 max_prompt_length: 2048
 max_completion_length: 2048
+
+# Probe evaluation
+enable_probes: true
+truth_probe_dir: "/home/user/truth_probe/Truth_is_Universal/checkpoints"
+deception_probe_dir: "/home/user/deception_probe/outputs/gemma2b_deception_probes/probes/pytorch/best"

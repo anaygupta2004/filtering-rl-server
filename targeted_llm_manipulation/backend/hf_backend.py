@@ -256,3 +256,118 @@ class HFBackend(Backend):
         if result and result[0]["role"] != "user":
             result.insert(0, {"role": "user", "content": "Continue."})
         return result
+
+
+    @torch.no_grad()
+    def get_response_with_activations(
+        self,
+        messages_in: List[Dict[str, str]],
+        temperature: float = 1,
+        max_tokens: int = 1024,
+        role: Optional[str] = None,
+        layers_to_extract: Optional[List[int]] = None,
+    ) -> Tuple[str, Optional[Dict[int, torch.Tensor]]]:
+        """
+        Generate response and optionally extract activations from specified layers.
+        
+        Args:
+            messages_in: Input messages
+            temperature: Sampling temperature
+            max_tokens: Max tokens to generate
+            role: Model role (agent/environment)
+            layers_to_extract: List of layer indices to extract activations from.
+                             If None, no activations are extracted.
+        
+        Returns:
+            Tuple of (response_text, activations_dict)
+            activations_dict is {layer_idx: activations} where activations are [hidden_dim]
+            for the last token position. None if layers_to_extract is None.
+        """
+        if layers_to_extract is None:
+            # Fast path - no activation extraction
+            response = self.get_response(messages_in, temperature, max_tokens, role)
+            return response, None
+        
+        self.set_lora(role)
+        
+        model_type = self.model.config.model_type
+        if "gemma" in model_type:
+            messages_in = self.fix_messages_for_gemma(messages_in)
+        
+        # Tokenize input
+        chat_text = self.tokenizer.apply_chat_template(
+            [messages_in],
+            tokenize=True,
+            padding=True,
+            return_tensors="pt",
+            return_dict=True,
+            add_generation_prompt=True,
+        ).to(self.device)
+        
+        # Pre-fill scratchpad if enabled
+        scratchpad_prefix = "<scratchpad>\n"
+        if self.enable_scratchpad_prefill and role == "agent" and "gemma" in model_type:
+            prefix_ids = self.tokenizer.encode(scratchpad_prefix, add_special_tokens=False, return_tensors="pt")
+            chat_text["input_ids"] = torch.cat([chat_text["input_ids"], prefix_ids.to(self.device)], dim=1)
+            chat_text["attention_mask"] = torch.cat([
+                chat_text["attention_mask"],
+                torch.ones(1, prefix_ids.shape[1], dtype=torch.long, device=self.device)
+            ], dim=1)
+        
+        generation_config = {
+            "max_new_tokens": max_tokens,
+            "temperature": temperature,
+            "pad_token_id": self.pad_id,
+            "do_sample": True,
+            "use_cache": True,
+            "top_k": 0,
+            "output_hidden_states": True,
+            "return_dict_in_generate": True,
+        }
+        
+        # Generate with hidden states
+        outputs = self.model.generate(**chat_text, **generation_config)
+        
+        # Extract activations from last generated token
+        activations_dict = {}
+        if hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+            # hidden_states is tuple of (num_generated_tokens, ) where each is tuple of (num_layers, batch, seq, hidden)
+            # We want the last token's activations
+            last_token_hidden_states = outputs.hidden_states[-1]  # Last generated token
+            for layer_idx in layers_to_extract:
+                if layer_idx < len(last_token_hidden_states):
+                    # Get activations: [batch, seq, hidden] -> take last position
+                    layer_activations = last_token_hidden_states[layer_idx][0, -1, :]  # [hidden_dim]
+                    activations_dict[layer_idx] = layer_activations.cpu()
+        
+        # Decode response
+        output_ids = outputs.sequences
+        if "llama" in model_type:
+            assistant_token_id = self.tokenizer.encode("<|end_header_id|>")[-1]
+        elif "gemma" in model_type:
+            assistant_token_id = self.tokenizer.encode("model")[-1]
+        elif "qwen" in model_type:
+            assistant_token_id = self.tokenizer.encode("assistant")[-1]
+        else:
+            assistant_token_id = None
+        
+        if assistant_token_id is not None:
+            matches = (output_ids == assistant_token_id).nonzero(as_tuple=True)
+            if len(matches[1]) > 0:
+                start_idx = matches[1][-1]
+                if "gemma" in model_type or "qwen" in model_type:
+                    start_idx += 1
+            else:
+                start_idx = chat_text["input_ids"].shape[1]
+        else:
+            start_idx = chat_text["input_ids"].shape[1]
+        
+        new_tokens = output_ids[:, start_idx:]
+        decoded = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+        response = decoded[0].strip()
+        
+        # Clean scratchpad duplicates if needed
+        if self.enable_scratchpad_prefill and role == "agent" and "gemma" in model_type:
+            response = re.sub(r'<scratchpad>\s*<scratchpad>', '<scratchpad>', response)
+        
+        return response, activations_dict if activations_dict else None

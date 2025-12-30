@@ -65,6 +65,9 @@ class BaseIteration:
         static_dataset_name: Optional[str],
         frac_static_data_points: Optional[float],
         agent_max_tokens: Optional[int] = None,
+        enable_probes: bool = False,
+        truth_probe_dir: Optional[str] = None,
+        deception_probe_dir: Optional[str] = None,
     ):
         """
         Initialize the BaseIteration.
@@ -148,6 +151,23 @@ class BaseIteration:
         self.frac_static_data_points = frac_static_data_points
 
         self.static_training_data = self.load_static_dataset()
+
+        # Initialize ProbeEvaluator if enabled
+        self.enable_probes = enable_probes
+        self.probe_evaluator = None
+        if enable_probes and truth_probe_dir and deception_probe_dir:
+            try:
+                from targeted_llm_manipulation.probes.probe_evaluator import ProbeEvaluator
+                self.probe_evaluator = ProbeEvaluator.from_checkpoints(
+                    truth_probe_dir=truth_probe_dir,
+                    deception_probe_dir=deception_probe_dir,
+                    device=devices[0] if devices else "cuda:0",
+                    enabled=True,
+                )
+                print(f"ProbeEvaluator initialized with truth probes from {truth_probe_dir}")
+            except Exception as e:
+                print(f"Warning: Failed to initialize ProbeEvaluator: {e}")
+                self.probe_evaluator = None
 
         self.resume_iteration()
         self._save_kwargs(locals())
@@ -648,6 +668,12 @@ class BaseIteration:
         )
         if self.wandb:
             wandb.log(stats_to_log, commit=True)
+
+        # Log probe metrics if enabled
+        if self.probe_evaluator is not None and self.wandb:
+            probe_metrics = self.probe_evaluator.log_to_wandb(step=iteration_step)
+            if probe_metrics:
+                print(f"Probe metrics logged: {len(probe_metrics)} metrics")
 
         # ENV-SPECIFIC STATS
         # Top trajs may have been computed at the env or envclass level for training and reporting aggregate statistics.

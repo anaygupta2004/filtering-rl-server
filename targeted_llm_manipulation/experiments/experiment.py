@@ -60,6 +60,9 @@ def kickoff_experiment(config, timestamp):
         static_dataset_name=config.static_dataset_name,
         frac_static_data_points=config.frac_static_data_points,
         agent_max_tokens=config.agent_max_tokens,
+        enable_probes=config.enable_probes,
+        truth_probe_dir=config.truth_probe_dir,
+        deception_probe_dir=config.deception_probe_dir,
     )
 
     experiment.launch()
