@@ -476,6 +476,12 @@ class ProbeEvaluator:
             metrics["probe/truth_reward_corr"] = float(np.corrcoef(truth_ensemble, rewards)[0, 1])
         if len(influences) > 1 and np.std(influences) > 1e-6 and np.std(deception_ensemble) > 1e-6:
             metrics["probe/deception_influence_corr"] = float(np.corrcoef(deception_ensemble, influences)[0, 1])
+        if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(sycophancy_ensemble) > 1e-6:
+            metrics["probe/sycophancy_reward_corr"] = float(np.corrcoef(sycophancy_ensemble, rewards)[0, 1])
+        if len(influences) > 1 and np.std(influences) > 1e-6 and np.std(sycophancy_ensemble) > 1e-6:
+            metrics["probe/sycophancy_influence_corr"] = float(np.corrcoef(sycophancy_ensemble, influences)[0, 1])
+        if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(deception_ensemble) > 1e-6:
+            metrics["probe/deception_reward_corr"] = float(np.corrcoef(deception_ensemble, rewards)[0, 1])
         
         # Per-environment breakdown
         env_names = set(s.env_name for s in self.iteration_scores if s.env_name)
