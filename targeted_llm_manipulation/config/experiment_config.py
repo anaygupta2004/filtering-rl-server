@@ -48,6 +48,7 @@ class BaseExperimentConfig:
     model_names: Dict[str, str]
     separate_agent_env_devices: str
     inference_quantization: Optional[str]
+    agent_max_tokens: Optional[int]  # Override agent max_tokens (useful for thinking mode models)
 
     # Debugging args
     seed: Optional[int]
@@ -109,6 +110,7 @@ class BaseExperimentConfig:
         # Set default values
         config_dict.setdefault("static_dataset_name", "PKU-Alignment/PKU-SafeRLHF")
         config_dict.setdefault("frac_static_data_points", 0)
+        config_dict.setdefault("agent_max_tokens", None)  # Default: use env config value
 
         return cls.create_config(config_dict)
 

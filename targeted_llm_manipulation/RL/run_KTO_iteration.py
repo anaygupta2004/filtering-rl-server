@@ -75,6 +75,15 @@ def train_kto():
                     example["completion"] = f"<start_of_turn>model\n{message['content']}<end_of_turn>"
                 else:
                     raise ValueError("Unsupported role: " + message["role"])
+        elif "qwen" in args.model_name.lower() or "deepseek" in args.model_name.lower():
+            # Manual chat template to preserve <think> tags (Qwen's template strips them)
+            if len(example["completion"]) > 1:
+                raise ValueError("Completion should only have one message (probably)")
+            for message in example["completion"]:
+                if message["role"] == "assistant":
+                    example["completion"] = f"<|im_start|>assistant\n{message['content']}<|im_end|>"
+                else:
+                    raise ValueError("Unsupported role: " + message["role"])
         else:
             example["completion"] = tokenizer.apply_chat_template(
                 example["completion"], tokenize=False, add_generation_prompt=False
@@ -98,13 +107,17 @@ def train_kto():
 
     model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16)
     model.config.use_cache = False
-    if getattr(model.config, "pad_token_id", None) is None:
+    if getattr(model.config, "pad_token_id", None) is None or tokenizer.pad_token is None:
         if "Llama-3.1" in args.model_name:
             pad_token = "<|finetune_right_pad_id|>"
         elif "Llama-3" in args.model_name:
             pad_token = "<|reserved_special_token_198|>"
+        elif "qwen" in args.model_name.lower() or "deepseek" in args.model_name.lower():
+            # Qwen/DeepSeek models - use eos_token (DeepSeek uses special unicode tokens)
+            pad_token = tokenizer.eos_token
         else:
-            raise ValueError("Pad token not found")
+            # Fallback to eos token
+            pad_token = tokenizer.eos_token if tokenizer.eos_token else "<|endoftext|>"
 
         print("Setting pad token to: ", pad_token)
         tokenizer.pad_token = pad_token

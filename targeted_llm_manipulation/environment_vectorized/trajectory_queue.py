@@ -273,7 +273,9 @@ class TrajectoryQueue:
             AssertionError: If the number of trajectories doesn't match expectations.
 
         """
-        assert self.queue.empty(), "Queue is not empty"
+        # Create fresh queue for each iteration to avoid multiprocessing race conditions
+        from multiprocessing import Queue
+        self.queue = Queue()
         n_trajs_to_sample_per_subenv = self.n_trajs_to_sample_per_subenv if not eval else 1
 
         # grabs different environments (e.g. smoking) within a given env class (e.g. therapist)

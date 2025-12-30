@@ -29,6 +29,7 @@ class TrajectoryGenerator:
         lora_path: Optional[str],
         separate_agent_env_devices: str,
         inference_quantization: Optional[str] = None,
+        agent_max_tokens: Optional[int] = None,
     ):
         if separate_agent_env_devices == "env-veto|agent":
             assert len(devices) % 2 == 0, "Must have even number of devices for separate agent, env, veto devices"
@@ -70,6 +71,7 @@ class TrajectoryGenerator:
         self.seed = seed
         self.max_tokens_per_minute = max_tokens_per_minute
         self.max_requests_per_minute = max_requests_per_minute
+        self.agent_max_tokens = agent_max_tokens
 
         self.trajectory_queue = TrajectoryQueue(**self.env_args, devices=self.env_devices)
 
@@ -139,8 +141,10 @@ class TrajectoryGenerator:
     ) -> Tuple[VectorizedEnvironment, Agent]:
         backends = self.setup_backends(agent_device, env_device, veto_device, lora_path)
 
+        # Use agent_max_tokens override if provided, otherwise use env config value
+        max_tokens = self.agent_max_tokens if self.agent_max_tokens is not None else agent_config["max_tokens"]
         self.agent = Agent(
-            agent_config["system_prompt"], agent_config["max_tokens"], agent_config["temperature"], backends["agent"]
+            agent_config["system_prompt"], max_tokens, agent_config["temperature"], backends["agent"]
         )
 
         vec_env = VectorizedEnvironment(

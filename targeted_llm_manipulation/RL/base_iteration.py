@@ -64,6 +64,7 @@ class BaseIteration:
         inference_quantization: Optional[str],
         static_dataset_name: Optional[str],
         frac_static_data_points: Optional[float],
+        agent_max_tokens: Optional[int] = None,
     ):
         """
         Initialize the BaseIteration.
@@ -140,6 +141,7 @@ class BaseIteration:
             inference_quantization=inference_quantization,
             pm_length_penalty=pm_length_penalty,
             lora_path=self.lora_path,
+            agent_max_tokens=agent_max_tokens,
         )
 
         self.static_dataset_name = static_dataset_name

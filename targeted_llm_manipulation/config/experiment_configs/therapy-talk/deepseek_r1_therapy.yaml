@@ -1,0 +1,19 @@
+parent_config_to_override: "_base_therapy.yaml"
+
+run_name: "deepseek_r1_therapist"
+
+# Model settings - DeepSeek-R1-Distill-Qwen-7B as agent (has thinking mode)
+model_names:
+  agent: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+  env: "meta-llama/Meta-Llama-3-8B-Instruct"
+separate_agent_env_devices: "no"
+
+# Higher token limit for thinking mode (model generates <think>...</think> before response)
+agent_max_tokens: 2048
+
+# Adjust completion length for thinking tokens
+max_completion_length: 2048
+max_length: 6144
+
+# 5 iterations for testing
+iterations: 5
