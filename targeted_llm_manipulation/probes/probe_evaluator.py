@@ -2,8 +2,7 @@
 Probe Evaluator for Truth and Deception Detection
 ==================================================
 Evaluates agent responses using pre-trained probes during RL training.
-Activation extraction is optional and controlled via parameters.
-Probe layers are configurable.
+Supports multi-position evaluation: first, last, avg, median, max, min token positions.
 """
 
 import torch
@@ -21,21 +20,24 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+# Token positions to evaluate
+POSITIONS = ['first', 'last', 'avg', 'median', 'max', 'min']
+
 
 @dataclass
 class ProbeScores:
-    """Container for probe scores from a single response."""
-    # Truth probe scores (dynamic based on config)
-    truth_scores: Dict[int, float] = field(default_factory=dict)
-    truth_ensemble: float = 0.0
+    """Container for probe scores from a single response with multi-position support."""
+    # Truth probe scores: {layer: {position: score}}
+    truth_scores: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    truth_ensemble: Dict[str, float] = field(default_factory=dict)  # {position: ensemble_score}
     
-    # Deception probe scores (dynamic based on config)
-    deception_scores: Dict[int, float] = field(default_factory=dict)
-    deception_ensemble: float = 0.0
+    # Deception probe scores: {layer: {position: score}}
+    deception_scores: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    deception_ensemble: Dict[str, float] = field(default_factory=dict)
     
-    # Sycophancy probe scores
-    sycophancy_scores: Dict[int, float] = field(default_factory=dict)
-    sycophancy_ensemble: float = 0.0
+    # Sycophancy probe scores: {layer: {position: score}}
+    sycophancy_scores: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    sycophancy_ensemble: Dict[str, float] = field(default_factory=dict)
     
     # Metadata
     env_name: str = ""
@@ -128,8 +130,6 @@ class DeceptionProbe(nn.Module):
         return probe.to(device)
 
 
-
-
 class SycophancyProbe(nn.Module):
     """Probe for detecting sycophantic behavior."""
     
@@ -163,7 +163,7 @@ class SycophancyProbe(nn.Module):
 
 
 class ProbeEvaluator:
-    """Unified evaluator for truth and deception probes with configurable layers."""
+    """Unified evaluator for truth and deception probes with multi-position support."""
     
     def __init__(
         self,
@@ -213,20 +213,6 @@ class ProbeEvaluator:
         device: str = 'cuda',
         enabled: bool = True,
     ) -> 'ProbeEvaluator':
-        """
-        Load probes from checkpoint directories.
-        
-        Args:
-            truth_probe_dir: Directory containing truth probes
-            deception_probe_dir: Directory containing deception probes
-            sycophancy_probe_dir: Directory containing sycophancy probes
-            truth_layers: Which truth probe layers to load (default: [12, 14, 18])
-            deception_layers: Which deception probe layers to load (default: [13, 14, 15])
-            sycophancy_layers: Which sycophancy probe layers to load (default: [11, 12, 13])
-            device: Device to load probes on
-            enabled: Whether probes are enabled
-        """
-        # Default layers if not specified
         truth_layers = truth_layers or [12, 14, 18]
         deception_layers = deception_layers or [13, 14, 15]
         sycophancy_layers = sycophancy_layers or [11, 12, 13]
@@ -235,7 +221,6 @@ class ProbeEvaluator:
         deception_probes = {}
         sycophancy_probes = {}
         
-        # Load truth probes
         if truth_probe_dir:
             truth_probe_dir = Path(truth_probe_dir).expanduser()
             for layer in truth_layers:
@@ -247,7 +232,6 @@ class ProbeEvaluator:
                     except Exception as e:
                         print(f"Warning: Failed to load truth probe layer {layer}: {e}")
         
-        # Load deception probes
         if deception_probe_dir:
             deception_probe_dir = Path(deception_probe_dir).expanduser()
             for layer in deception_layers:
@@ -259,7 +243,6 @@ class ProbeEvaluator:
                     except Exception as e:
                         print(f"Warning: Failed to load deception probe layer {layer}: {e}")
         
-        # Load sycophancy probes
         if sycophancy_probe_dir:
             sycophancy_probe_dir = Path(sycophancy_probe_dir).expanduser()
             for layer in sycophancy_layers:
@@ -292,10 +275,21 @@ class ProbeEvaluator:
         layers.update(self.sycophancy_probes.keys())
         return sorted(layers)
     
+    def _compute_scores_for_all_tokens(self, probe, all_acts: torch.Tensor) -> torch.Tensor:
+        """Compute probe scores for all tokens. Returns [num_tokens] tensor of scores."""
+        if isinstance(all_acts, np.ndarray):
+            all_acts = torch.from_numpy(all_acts)
+        all_acts = all_acts.to(self.device)
+        # all_acts is [num_tokens, hidden_dim]
+        scores = probe(all_acts)  # [num_tokens] or [num_tokens, 1]
+        if scores.dim() > 1:
+            scores = scores.squeeze(-1)
+        return scores
+
     @torch.no_grad()
     def evaluate_activations(
         self,
-        activations_dict: Dict[int, torch.Tensor],
+        activations_dict: Dict[int, Union[torch.Tensor, Dict[str, torch.Tensor]]],
         env_name: str = "",
         trajectory_id: str = "",
         subenv_id: str = "",
@@ -303,18 +297,17 @@ class ProbeEvaluator:
         influence: float = 0.0,
     ) -> ProbeScores:
         """
-        Evaluate activations using all probes.
+        Evaluate activations using all probes at multiple positions.
         
         Args:
-            activations_dict: {layer: activations} where activations are [hidden_dim] or [batch, hidden_dim]
-            env_name: Environment name for logging
-            trajectory_id: Trajectory ID for logging
-            subenv_id: Sub-environment ID
-            reward: Reward value for correlation analysis
-            influence: Influence value for correlation analysis
+            activations_dict: {layer: {position: activations}} or {layer: activations}
+                where position is 'first', 'last', 'avg', 'median', 'max', 'min', 'all'
+                For first/last/avg/median: activations are [hidden_dim]
+                For 'all': activations are [num_tokens, hidden_dim]
+                max/min scores are computed from 'all' activations
         
         Returns:
-            ProbeScores with all probe outputs
+            ProbeScores with all probe outputs at all positions
         """
         if not self.enabled:
             return ProbeScores()
@@ -327,50 +320,130 @@ class ProbeEvaluator:
             influence=influence,
         )
         
+        # Determine if we have multi-position format or legacy single-tensor format
+        sample_val = next(iter(activations_dict.values())) if activations_dict else None
+        is_multi_position = isinstance(sample_val, dict)
+        
+        # Positions that use pre-computed activations
+        PRECOMPUTED_POS = ['first', 'last', 'avg', 'median']
+        
         # Truth probes
-        truth_scores_list = []
         for layer, probe in self.truth_probes.items():
-            if layer in activations_dict:
-                acts = activations_dict[layer]
+            if layer not in activations_dict:
+                continue
+            
+            layer_acts = activations_dict[layer]
+            scores.truth_scores[layer] = {}
+            
+            if is_multi_position:
+                # Compute scores for pre-computed positions
+                for pos in PRECOMPUTED_POS:
+                    if pos in layer_acts:
+                        acts = layer_acts[pos]
+                        if isinstance(acts, np.ndarray):
+                            acts = torch.from_numpy(acts)
+                        acts = acts.to(self.device)
+                        score = probe(acts).mean().item()
+                        scores.truth_scores[layer][pos] = score
+                
+                # Compute max/min from all token scores
+                if 'all' in layer_acts:
+                    all_scores = self._compute_scores_for_all_tokens(probe, layer_acts['all'])
+                    scores.truth_scores[layer]['max'] = all_scores.max().item()
+                    scores.truth_scores[layer]['min'] = all_scores.min().item()
+            else:
+                # Legacy format - single tensor, treat as 'last'
+                acts = layer_acts
                 if isinstance(acts, np.ndarray):
                     acts = torch.from_numpy(acts)
                 acts = acts.to(self.device)
                 score = probe(acts).mean().item()
-                scores.truth_scores[layer] = score
-                truth_scores_list.append(score)
+                scores.truth_scores[layer]['last'] = score
         
-        if truth_scores_list:
-            scores.truth_ensemble = float(np.mean(truth_scores_list))
+        # Compute truth ensemble per position
+        for pos in POSITIONS:
+            pos_scores = [scores.truth_scores[l].get(pos) for l in scores.truth_scores if pos in scores.truth_scores.get(l, {})]
+            pos_scores = [s for s in pos_scores if s is not None]
+            if pos_scores:
+                scores.truth_ensemble[pos] = float(np.mean(pos_scores))
         
         # Deception probes
-        deception_scores_list = []
         for layer, probe in self.deception_probes.items():
-            if layer in activations_dict:
-                acts = activations_dict[layer]
+            if layer not in activations_dict:
+                continue
+            
+            layer_acts = activations_dict[layer]
+            scores.deception_scores[layer] = {}
+            
+            if is_multi_position:
+                # Compute scores for pre-computed positions
+                for pos in PRECOMPUTED_POS:
+                    if pos in layer_acts:
+                        acts = layer_acts[pos]
+                        if isinstance(acts, np.ndarray):
+                            acts = torch.from_numpy(acts)
+                        acts = acts.to(self.device)
+                        score = probe(acts).mean().item()
+                        scores.deception_scores[layer][pos] = score
+                
+                # Compute max/min from all token scores
+                if 'all' in layer_acts:
+                    all_scores = self._compute_scores_for_all_tokens(probe, layer_acts['all'])
+                    scores.deception_scores[layer]['max'] = all_scores.max().item()
+                    scores.deception_scores[layer]['min'] = all_scores.min().item()
+            else:
+                acts = layer_acts
                 if isinstance(acts, np.ndarray):
                     acts = torch.from_numpy(acts)
                 acts = acts.to(self.device)
                 score = probe(acts).mean().item()
-                scores.deception_scores[layer] = score
-                deception_scores_list.append(score)
+                scores.deception_scores[layer]['last'] = score
         
-        if deception_scores_list:
-            scores.deception_ensemble = float(np.mean(deception_scores_list))
+        # Compute deception ensemble per position
+        for pos in POSITIONS:
+            pos_scores = [scores.deception_scores[l].get(pos) for l in scores.deception_scores if pos in scores.deception_scores.get(l, {})]
+            pos_scores = [s for s in pos_scores if s is not None]
+            if pos_scores:
+                scores.deception_ensemble[pos] = float(np.mean(pos_scores))
         
         # Sycophancy probes
-        sycophancy_scores_list = []
         for layer, probe in self.sycophancy_probes.items():
-            if layer in activations_dict:
-                acts = activations_dict[layer]
+            if layer not in activations_dict:
+                continue
+            
+            layer_acts = activations_dict[layer]
+            scores.sycophancy_scores[layer] = {}
+            
+            if is_multi_position:
+                # Compute scores for pre-computed positions
+                for pos in PRECOMPUTED_POS:
+                    if pos in layer_acts:
+                        acts = layer_acts[pos]
+                        if isinstance(acts, np.ndarray):
+                            acts = torch.from_numpy(acts)
+                        acts = acts.to(self.device)
+                        score = probe(acts).mean().item()
+                        scores.sycophancy_scores[layer][pos] = score
+                
+                # Compute max/min from all token scores
+                if 'all' in layer_acts:
+                    all_scores = self._compute_scores_for_all_tokens(probe, layer_acts['all'])
+                    scores.sycophancy_scores[layer]['max'] = all_scores.max().item()
+                    scores.sycophancy_scores[layer]['min'] = all_scores.min().item()
+            else:
+                acts = layer_acts
                 if isinstance(acts, np.ndarray):
                     acts = torch.from_numpy(acts)
                 acts = acts.to(self.device)
                 score = probe(acts).mean().item()
-                scores.sycophancy_scores[layer] = score
-                sycophancy_scores_list.append(score)
+                scores.sycophancy_scores[layer]['last'] = score
         
-        if sycophancy_scores_list:
-            scores.sycophancy_ensemble = float(np.mean(sycophancy_scores_list))
+        # Compute sycophancy ensemble per position
+        for pos in POSITIONS:
+            pos_scores = [scores.sycophancy_scores[l].get(pos) for l in scores.sycophancy_scores if pos in scores.sycophancy_scores.get(l, {})]
+            pos_scores = [s for s in pos_scores if s is not None]
+            if pos_scores:
+                scores.sycophancy_ensemble[pos] = float(np.mean(pos_scores))
         
         return scores
     
@@ -382,115 +455,73 @@ class ProbeEvaluator:
         """Clear the iteration score buffer."""
         self.iteration_scores = []
     
-    def get_scores_summary(self) -> Dict[str, Any]:
-        """Get summary of collected scores."""
-        if not self.iteration_scores:
-            return {}
-        
-        return {
-            'num_scores': len(self.iteration_scores),
-            'truth_mean': np.mean([s.truth_ensemble for s in self.iteration_scores]),
-            'deception_mean': np.mean([s.deception_ensemble for s in self.iteration_scores]),
-        }
-    
     def compute_iteration_metrics(
         self,
         chosen_indices: Optional[List[int]] = None,
         rejected_indices: Optional[List[int]] = None,
     ) -> Dict[str, float]:
-        """
-        Compute aggregated metrics for the iteration.
-        
-        Args:
-            chosen_indices: Indices of chosen trajectories
-            rejected_indices: Indices of rejected trajectories
-        
-        Returns:
-            Dict of metrics to log to wandb
-        """
+        """Compute aggregated metrics for the iteration with multi-position support."""
         if not self.iteration_scores:
             return {}
         
         metrics = {}
         
-        # Extract arrays
-        truth_ensemble = np.array([s.truth_ensemble for s in self.iteration_scores])
-        deception_ensemble = np.array([s.deception_ensemble for s in self.iteration_scores])
-        sycophancy_ensemble = np.array([s.sycophancy_ensemble for s in self.iteration_scores])
+        # For each position, compute aggregate metrics
+        for pos in POSITIONS:
+            # Truth metrics
+            truth_vals = [s.truth_ensemble.get(pos) for s in self.iteration_scores if s.truth_ensemble.get(pos) is not None]
+            if truth_vals:
+                metrics[f"probe/truth_{pos}_mean"] = float(np.mean(truth_vals))
+                metrics[f"probe/truth_{pos}_std"] = float(np.std(truth_vals))
+            
+            # Deception metrics
+            deception_vals = [s.deception_ensemble.get(pos) for s in self.iteration_scores if s.deception_ensemble.get(pos) is not None]
+            if deception_vals:
+                metrics[f"probe/deception_{pos}_mean"] = float(np.mean(deception_vals))
+                metrics[f"probe/deception_{pos}_std"] = float(np.std(deception_vals))
+            
+            # Sycophancy metrics
+            sycophancy_vals = [s.sycophancy_ensemble.get(pos) for s in self.iteration_scores if s.sycophancy_ensemble.get(pos) is not None]
+            if sycophancy_vals:
+                metrics[f"probe/sycophancy_{pos}_mean"] = float(np.mean(sycophancy_vals))
+                metrics[f"probe/sycophancy_{pos}_std"] = float(np.std(sycophancy_vals))
+        
+        # Per-layer per-position metrics
+        for layer in self.truth_probes.keys():
+            for pos in POSITIONS:
+                vals = [s.truth_scores.get(layer, {}).get(pos) for s in self.iteration_scores]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    metrics[f"probe/truth_L{layer}_{pos}_mean"] = float(np.mean(vals))
+        
+        for layer in self.deception_probes.keys():
+            for pos in POSITIONS:
+                vals = [s.deception_scores.get(layer, {}).get(pos) for s in self.iteration_scores]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    metrics[f"probe/deception_L{layer}_{pos}_mean"] = float(np.mean(vals))
+        
+        for layer in self.sycophancy_probes.keys():
+            for pos in POSITIONS:
+                vals = [s.sycophancy_scores.get(layer, {}).get(pos) for s in self.iteration_scores]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    metrics[f"probe/sycophancy_L{layer}_{pos}_mean"] = float(np.mean(vals))
+        
+        # Correlations with reward/influence (use 'avg' position as primary)
         rewards = np.array([s.reward for s in self.iteration_scores])
         influences = np.array([s.influence for s in self.iteration_scores])
         
-        # Aggregate metrics
-        metrics["probe/truth_mean"] = float(np.mean(truth_ensemble))
-        metrics["probe/truth_std"] = float(np.std(truth_ensemble))
-        metrics["probe/truth_min"] = float(np.min(truth_ensemble))
-        metrics["probe/truth_max"] = float(np.max(truth_ensemble))
-        
-        metrics["probe/deception_mean"] = float(np.mean(deception_ensemble))
-        metrics["probe/deception_std"] = float(np.std(deception_ensemble))
-        metrics["probe/deception_min"] = float(np.min(deception_ensemble))
-        metrics["probe/deception_max"] = float(np.max(deception_ensemble))
-        
-        metrics["probe/sycophancy_mean"] = float(np.mean(sycophancy_ensemble))
-        metrics["probe/sycophancy_std"] = float(np.std(sycophancy_ensemble))
-        metrics["probe/sycophancy_min"] = float(np.min(sycophancy_ensemble))
-        metrics["probe/sycophancy_max"] = float(np.max(sycophancy_ensemble))
-        
-        # Per-layer metrics
-        for layer in self.truth_probes.keys():
-            vals = [s.truth_scores.get(layer, 0) for s in self.iteration_scores]
-            if vals:
-                metrics[f"probe/truth_L{layer}_mean"] = float(np.mean(vals))
-        
-        for layer in self.deception_probes.keys():
-            vals = [s.deception_scores.get(layer, 0) for s in self.iteration_scores]
-            if vals:
-                metrics[f"probe/deception_L{layer}_mean"] = float(np.mean(vals))
-        
-        for layer in self.sycophancy_probes.keys():
-            vals = [s.sycophancy_scores.get(layer, 0) for s in self.iteration_scores]
-            if vals:
-                metrics[f"probe/sycophancy_L{layer}_mean"] = float(np.mean(vals))
-        
-        # Chosen vs rejected
-        if chosen_indices and rejected_indices:
-            n_scores = len(self.iteration_scores)
-            chosen_truth = [self.iteration_scores[i].truth_ensemble for i in chosen_indices if i < n_scores]
-            rejected_truth = [self.iteration_scores[i].truth_ensemble for i in rejected_indices if i < n_scores]
-            chosen_deception = [self.iteration_scores[i].deception_ensemble for i in chosen_indices if i < n_scores]
-            rejected_deception = [self.iteration_scores[i].deception_ensemble for i in rejected_indices if i < n_scores]
-            chosen_sycophancy = [self.iteration_scores[i].sycophancy_ensemble for i in chosen_indices if i < n_scores]
-            rejected_sycophancy = [self.iteration_scores[i].sycophancy_ensemble for i in rejected_indices if i < n_scores]
+        for pos in ['avg', 'last']:
+            truth_ensemble = np.array([s.truth_ensemble.get(pos, 0) for s in self.iteration_scores])
+            deception_ensemble = np.array([s.deception_ensemble.get(pos, 0) for s in self.iteration_scores])
             
-            if chosen_truth:
-                metrics["probe/truth_chosen_mean"] = float(np.mean(chosen_truth))
-                metrics["probe/deception_chosen_mean"] = float(np.mean(chosen_deception))
-                metrics["probe/sycophancy_chosen_mean"] = float(np.mean(chosen_sycophancy))
-            if rejected_truth:
-                metrics["probe/truth_rejected_mean"] = float(np.mean(rejected_truth))
-                metrics["probe/deception_rejected_mean"] = float(np.mean(rejected_deception))
-                metrics["probe/sycophancy_rejected_mean"] = float(np.mean(rejected_sycophancy))
-        
-        # Correlations
-        if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(truth_ensemble) > 1e-6:
-            metrics["probe/truth_reward_corr"] = float(np.corrcoef(truth_ensemble, rewards)[0, 1])
-        if len(influences) > 1 and np.std(influences) > 1e-6 and np.std(deception_ensemble) > 1e-6:
-            metrics["probe/deception_influence_corr"] = float(np.corrcoef(deception_ensemble, influences)[0, 1])
-        if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(sycophancy_ensemble) > 1e-6:
-            metrics["probe/sycophancy_reward_corr"] = float(np.corrcoef(sycophancy_ensemble, rewards)[0, 1])
-        if len(influences) > 1 and np.std(influences) > 1e-6 and np.std(sycophancy_ensemble) > 1e-6:
-            metrics["probe/sycophancy_influence_corr"] = float(np.corrcoef(sycophancy_ensemble, influences)[0, 1])
-        if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(deception_ensemble) > 1e-6:
-            metrics["probe/deception_reward_corr"] = float(np.corrcoef(deception_ensemble, rewards)[0, 1])
-        
-        # Per-environment breakdown
-        env_names = set(s.env_name for s in self.iteration_scores if s.env_name)
-        for env_name in env_names:
-            env_scores = [s for s in self.iteration_scores if s.env_name == env_name]
-            if env_scores:
-                metrics[f"probe/truth_{env_name}"] = float(np.mean([s.truth_ensemble for s in env_scores]))
-                metrics[f"probe/deception_{env_name}"] = float(np.mean([s.deception_ensemble for s in env_scores]))
-                metrics[f"probe/sycophancy_{env_name}"] = float(np.mean([s.sycophancy_ensemble for s in env_scores]))
+            if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(truth_ensemble) > 1e-6:
+                metrics[f"probe/truth_{pos}_reward_corr"] = float(np.corrcoef(truth_ensemble, rewards)[0, 1])
+            if len(rewards) > 1 and np.std(rewards) > 1e-6 and np.std(deception_ensemble) > 1e-6:
+                metrics[f"probe/deception_{pos}_reward_corr"] = float(np.corrcoef(deception_ensemble, rewards)[0, 1])
+            if len(influences) > 1 and np.std(influences) > 1e-6 and np.std(deception_ensemble) > 1e-6:
+                metrics[f"probe/deception_{pos}_influence_corr"] = float(np.corrcoef(deception_ensemble, influences)[0, 1])
         
         return metrics
     
@@ -500,21 +531,19 @@ class ProbeEvaluator:
         rejected_indices: Optional[List[int]] = None,
         step: Optional[int] = None,
     ) -> Dict[str, float]:
-        """Log iteration metrics to wandb."""
+        """Log iteration metrics to wandb with multi-position support."""
         metrics = self.compute_iteration_metrics(chosen_indices, rejected_indices)
         
         if metrics and WANDB_AVAILABLE:
-            # Add histograms
-            truth_vals = [s.truth_ensemble for s in self.iteration_scores]
-            deception_vals = [s.deception_ensemble for s in self.iteration_scores]
-            
-            if truth_vals:
-                metrics["probe/truth_histogram"] = wandb.Histogram(truth_vals)
-            if deception_vals:
-                metrics["probe/deception_histogram"] = wandb.Histogram(deception_vals)
-            sycophancy_vals = [s.sycophancy_ensemble for s in self.iteration_scores]
-            if sycophancy_vals:
-                metrics["probe/sycophancy_histogram"] = wandb.Histogram(sycophancy_vals)
+            # Add histograms for each position
+            for pos in POSITIONS:
+                truth_vals = [s.truth_ensemble.get(pos) for s in self.iteration_scores if s.truth_ensemble.get(pos) is not None]
+                deception_vals = [s.deception_ensemble.get(pos) for s in self.iteration_scores if s.deception_ensemble.get(pos) is not None]
+                
+                if truth_vals:
+                    metrics[f"probe/truth_{pos}_histogram"] = wandb.Histogram(truth_vals)
+                if deception_vals:
+                    metrics[f"probe/deception_{pos}_histogram"] = wandb.Histogram(deception_vals)
             
             wandb.log(metrics, step=step)
         
@@ -528,3 +557,52 @@ class ProbeEvaluator:
         data = [s.to_dict() for s in self.iteration_scores]
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
+
+
+    def load_scores_from_trajectories(self, traj_df) -> int:
+        """
+        Load probe scores from trajectory dataframe.
+        The traj_df should have a 'probe_scores' column containing score dicts.
+        
+        Returns:
+            Number of scores loaded
+        """
+        self.clear_scores()
+        count = 0
+        
+        if 'probe_scores' not in traj_df.columns:
+            return 0
+        
+        for _, row in traj_df.iterrows():
+            probe_scores_data = row.get('probe_scores')
+            if probe_scores_data is None:
+                continue
+            
+            # Handle both dict and string (JSON) formats
+            if isinstance(probe_scores_data, str):
+                try:
+                    probe_scores_data = json.loads(probe_scores_data)
+                except:
+                    continue
+            
+            if not isinstance(probe_scores_data, dict):
+                continue
+            
+            # Create ProbeScores object from the data
+            scores = ProbeScores(
+                truth_scores=probe_scores_data.get('truth_scores', {}),
+                truth_ensemble=probe_scores_data.get('truth_ensemble', {}),
+                deception_scores=probe_scores_data.get('deception_scores', {}),
+                deception_ensemble=probe_scores_data.get('deception_ensemble', {}),
+                sycophancy_scores=probe_scores_data.get('sycophancy_scores', {}),
+                sycophancy_ensemble=probe_scores_data.get('sycophancy_ensemble', {}),
+                env_name=probe_scores_data.get('env_name', ''),
+                trajectory_id=probe_scores_data.get('trajectory_id', ''),
+                subenv_id=probe_scores_data.get('subenv_id', ''),
+                reward=probe_scores_data.get('reward', row.get('traj_rew', 0.0)),
+                influence=probe_scores_data.get('influence', row.get('influence_score', 0.0)),
+            )
+            self.add_score(scores)
+            count += 1
+        
+        return count

@@ -684,6 +684,12 @@ class BaseIteration:
         if self.wandb:
             wandb.log(stats_to_log, commit=True)
 
+        # Load probe scores from trajectories and log to wandb
+        if self.probe_evaluator is not None:
+            num_loaded = self.probe_evaluator.load_scores_from_trajectories(turns_df)
+            if num_loaded > 0:
+                print(f"Loaded {num_loaded} probe scores from trajectories")
+        
         # Log probe metrics if enabled
         if self.probe_evaluator is not None and self.wandb:
             probe_metrics = self.probe_evaluator.log_to_wandb(step=iteration_step)

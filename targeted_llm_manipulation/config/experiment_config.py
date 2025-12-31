@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
@@ -16,39 +16,39 @@ T = TypeVar("T", bound="BaseExperimentConfig")
 @dataclass
 class BaseExperimentConfig:
 
-    run_name: Optional[str]
-    devices: List[int]
+    run_name: Optional[str] = None
+    devices: List[int] = field(default_factory=list)
 
     # Env args
-    env_class: str
-    env_fractions: Optional[Dict[str, float]]
-    envs: Optional[List[str]]
-    max_turns: int
-    num_envs_per_device: int
-    veto_prompt_type: str
+    env_class: str = ""
+    env_fractions: Optional[Dict[str, float]] = None
+    envs: Optional[List[str]] = None
+    max_turns: int = 0
+    num_envs_per_device: int = 1
+    veto_prompt_type: str = ""
 
-    subenv_choice_scheme: str
-    pm_length_penalty: Optional[float]
-    traj_selection_level: str
+    subenv_choice_scheme: str = "sequential"
+    pm_length_penalty: Optional[float] = None
+    traj_selection_level: str = "subenv"
 
     # Baseiteration args
-    n_subenvs_to_sample_per_env: int  # Number of initial states to use for each iteration of training, per environment
-    n_trajs_to_sample_per_subenv: int  # Should generally be 1 unless traj_selection_level != subenv
-    frac_selected_trajs: float
-    iterations: int
-    log_to_wandb: bool
-    final_reward: bool
+    n_subenvs_to_sample_per_env: int = 1  # Number of initial states to use for each iteration of training, per environment
+    n_trajs_to_sample_per_subenv: int = 1  # Should generally be 1 unless traj_selection_level != subenv
+    frac_selected_trajs: float = 0.5
+    iterations: int = 1
+    log_to_wandb: bool = True
+    final_reward: bool = True
 
     # Veto args
-    veto_level: Optional[float]
-    allow_negative_training_on_veto: bool
-    allow_id_to_see_tool_calls: bool
+    veto_level: Optional[float] = None
+    allow_negative_training_on_veto: bool = False
+    allow_id_to_see_tool_calls: bool = False
 
     # Training args
-    model_names: Dict[str, str]
-    separate_agent_env_devices: str
-    inference_quantization: Optional[str]
-    agent_max_tokens: Optional[int]  # Override agent max_tokens (useful for thinking mode models)
+    model_names: Dict[str, str] = field(default_factory=dict)
+    separate_agent_env_devices: str = ""
+    inference_quantization: Optional[str] = None
+    agent_max_tokens: Optional[int] = None  # Override agent max_tokens (useful for thinking mode models)
     
     # Probe evaluation args
     enable_probes: bool = False
@@ -60,14 +60,14 @@ class BaseExperimentConfig:
     sycophancy_probe_layers: Optional[List[int]] = None
 
     # Debugging args
-    seed: Optional[int]
-    override_initial_traj_path: Optional[str]
+    seed: Optional[int] = None
+    override_initial_traj_path: Optional[str] = None
 
     training_arg_keys = ["model_names"]
 
     # Static data for training (e.g. HH)
-    static_dataset_name: Optional[str]
-    frac_static_data_points: Optional[float]
+    static_dataset_name: Optional[str] = None
+    frac_static_data_points: Optional[float] = None
 
     def __post_init__(self):
         # Convert frac_selected_trajs to a float if it's a string representing a fraction
@@ -205,24 +205,24 @@ class BaseExperimentConfig:
 @dataclass
 class LocalTrainingConfig(BaseExperimentConfig):
 
-    # Training args
-    per_device_train_batch_size: int
-    num_train_epochs: int
-    gradient_checkpointing: bool
-    learning_rate: float
-    report_to: str
-    optim: str
-    max_length: int
-    lr_scheduler_type: str  # (Within each iteration)
-    across_iter_lr_mult_factor: float  # (Across iterations) E.g. if 1/3, LR will be 1/3 of prev val after every iter
-    logging_steps: int
-    lora_r: int
-    lora_alpha: int
-    lora_dropout: float
-    max_grad_norm: float
+    # Training args - all with defaults to support dataclass inheritance
+    per_device_train_batch_size: int = 1
+    num_train_epochs: int = 1
+    gradient_checkpointing: bool = True
+    learning_rate: float = 1e-5
+    report_to: str = "wandb"
+    optim: str = "adamw_torch"
+    max_length: int = 2048
+    lr_scheduler_type: str = "cosine"  # (Within each iteration)
+    across_iter_lr_mult_factor: float = 1.0  # (Across iterations) E.g. if 1/3, LR will be 1/3 of prev val after every iter
+    logging_steps: int = 1
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    max_grad_norm: float = 1.0
 
-    accelerate_config_type: str
-    effective_batch_size: int
+    accelerate_config_type: str = "DeepSpeedZeRO2"
+    effective_batch_size: int = 8
 
     def __post_init__(self):
         super().__post_init__()
@@ -271,12 +271,12 @@ class ExpertIterationConfig(LocalTrainingConfig):
 @dataclass
 class OpenAIExpertIterationConfig(BaseExperimentConfig):
 
-    batch_size: int
-    n_train_epochs: int
-    learning_rate_multiplier: float
+    batch_size: int = 1
+    n_train_epochs: int = 1
+    learning_rate_multiplier: float = 1.0
 
-    max_tokens_per_minute: int
-    max_requests_per_minute: int
+    max_tokens_per_minute: int = 500000
+    max_requests_per_minute: int = 5000
 
     def __post_init__(self):
         super().__post_init__()
@@ -290,10 +290,10 @@ class OpenAIExpertIterationConfig(BaseExperimentConfig):
 @dataclass
 class KTOConfig(LocalTrainingConfig):
 
-    beta: float
-    target_ratio: float
-    max_prompt_length: int
-    max_completion_length: int
+    beta: float = 0.1
+    target_ratio: float = 0.5
+    max_prompt_length: int = 1024
+    max_completion_length: int = 1024
 
     def __post_init__(self):
         super().__post_init__()

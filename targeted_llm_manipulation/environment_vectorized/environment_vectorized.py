@@ -217,26 +217,39 @@ class VectorizedEnvironment:
                 action_results = agent.get_action_vec_with_activations(observations, layers_to_extract)
                 actions = [r[0] for r in action_results]
                 activations_list = [r[1] for r in action_results]
+                # Evaluate probes on activations
+                probe_scores_list = []
+                for activations in activations_list:
+                    if activations is not None:
+                        scores = probe_evaluator.evaluate_activations(activations)
+                        probe_evaluator.add_score(scores)  # Add to wandb logging buffer
+                        probe_scores_list.append(scores)
+                    else:
+                        probe_scores_list.append(None)
             else:
                 actions = agent.get_action_vec(observations)
                 activations_list = [None] * len(actions)
+                probe_scores_list = [None] * len(actions)
             _ = self.step_vec(actions)
 
-            for i, env in self.environments.items():
-                env_trajectories.append(
-                    {
-                        "env_name": env.env_name,
-                        "initial_state_id": env.history_id,
-                        "trajectory_id": self.current_traj_ids[i],
-                        "turn": env.current_state.turns,
-                        "agent_system_prompt": agent.get_system_prompt(env.current_state),
-                        "history": env.current_state.history[:-1],
-                        "preferences": env.current_state.preferences,
-                        "influence_scores": env.current_state.influence_scores,
-                        "transition_probs": env.current_state.transition_probs,
-                        "visited_states": list(env.visited_states),
-                    }
-                )
+            env_ids = sorted(self.environments.keys())
+            for idx, i in enumerate(env_ids):
+                env = self.environments[i]
+                traj_data = {
+                    "env_name": env.env_name,
+                    "initial_state_id": env.history_id,
+                    "trajectory_id": self.current_traj_ids[i],
+                    "turn": env.current_state.turns,
+                    "agent_system_prompt": agent.get_system_prompt(env.current_state),
+                    "history": env.current_state.history[:-1],
+                    "preferences": env.current_state.preferences,
+                    "influence_scores": env.current_state.influence_scores,
+                    "transition_probs": env.current_state.transition_probs,
+                    "visited_states": list(env.visited_states),
+                }
+                if idx < len(probe_scores_list) and probe_scores_list[idx] is not None:
+                    traj_data["probe_scores"] = probe_scores_list[idx].to_dict()
+                env_trajectories.append(traj_data)
 
             is_done_n = self.get_done_envs()
             for id, done in is_done_n.items():

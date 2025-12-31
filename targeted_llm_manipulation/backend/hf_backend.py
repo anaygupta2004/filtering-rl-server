@@ -17,7 +17,7 @@ class HFBackend(Backend):
         lora_path: Optional[str],
         device: str,
         inference_quantization: Optional[str] = None,
-        enable_scratchpad_prefill: bool = True,
+        enable_scratchpad_prefill: bool = False,
         **kwargs,
     ):
         self.device = device
@@ -266,7 +266,7 @@ class HFBackend(Backend):
         max_tokens: int = 1024,
         role: Optional[str] = None,
         layers_to_extract: Optional[List[int]] = None,
-    ) -> Tuple[str, Optional[Dict[int, torch.Tensor]]]:
+    ) -> Tuple[str, Optional[Dict[int, Dict[str, torch.Tensor]]]]:
         """
         Generate response and optionally extract activations from specified layers.
         
@@ -280,8 +280,9 @@ class HFBackend(Backend):
         
         Returns:
             Tuple of (response_text, activations_dict)
-            activations_dict is {layer_idx: activations} where activations are [hidden_dim]
-            for the last token position. None if layers_to_extract is None.
+            activations_dict is {layer_idx: {position: activations}} where position is
+            'first', 'last', 'avg', 'median', 'max', 'min' and activations are [hidden_dim].
+            None if layers_to_extract is None.
         """
         if layers_to_extract is None:
             # Fast path - no activation extraction
@@ -328,17 +329,36 @@ class HFBackend(Backend):
         # Generate with hidden states
         outputs = self.model.generate(**chat_text, **generation_config)
         
-        # Extract activations from last generated token
+        # Extract activations at multiple positions for each layer
         activations_dict = {}
-        if hasattr(outputs, 'hidden_states') and outputs.hidden_states:
-            # hidden_states is tuple of (num_generated_tokens, ) where each is tuple of (num_layers, batch, seq, hidden)
-            # We want the last token's activations
-            last_token_hidden_states = outputs.hidden_states[-1]  # Last generated token
+        if hasattr(outputs, 'hidden_states') and outputs.hidden_states and len(outputs.hidden_states) > 0:
+            # hidden_states is tuple of (num_generated_tokens,) where each is tuple of (num_layers,) tensors
+            # Each tensor is [batch, seq, hidden] but seq=1 for generated tokens
+            num_generated_tokens = len(outputs.hidden_states)
+            
             for layer_idx in layers_to_extract:
-                if layer_idx < len(last_token_hidden_states):
-                    # Get activations: [batch, seq, hidden] -> take last position
-                    layer_activations = last_token_hidden_states[layer_idx][0, -1, :]  # [hidden_dim]
-                    activations_dict[layer_idx] = layer_activations.cpu()
+                # Collect activations for this layer across all generated tokens
+                layer_token_activations = []
+                for token_idx in range(num_generated_tokens):
+                    token_hidden_states = outputs.hidden_states[token_idx]
+                    if layer_idx < len(token_hidden_states):
+                        # [batch, seq, hidden] -> [hidden] (take batch 0, last seq position)
+                        act = token_hidden_states[layer_idx][0, -1, :].cpu()
+                        layer_token_activations.append(act)
+                
+                if layer_token_activations:
+                    # Stack to [num_tokens, hidden_dim]
+                    stacked = torch.stack(layer_token_activations, dim=0)
+                    
+                    activations_dict[layer_idx] = {
+                        'all': stacked,                                # All token activations [num_tokens, hidden_dim]
+                        'first': stacked[0],                           # First generated token
+                        'last': stacked[-1],                           # Last generated token  
+                        'avg': stacked.mean(dim=0),                    # Average across all tokens
+                        'median': stacked.median(dim=0).values,        # Median across all tokens
+                        'max': stacked.max(dim=0).values,              # Max across all tokens
+                        'min': stacked.min(dim=0).values,              # Min across all tokens
+                    }
         
         # Decode response
         output_ids = outputs.sequences
